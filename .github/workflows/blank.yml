@@ -1,0 +1,904 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Heart,
+  X,
+  MessageCircle,
+  User,
+  Sparkles,
+  ShieldCheck,
+  MapPin,
+  SlidersHorizontal,
+  Crown,
+  Search,
+  Bell,
+  Star,
+  CalendarDays,
+  LockKeyhole,
+  Gem,
+  Video,
+  Flag,
+  Coffee,
+  WalletCards,
+  Database,
+  Send,
+  Mail,
+  KeyRound,
+  LogOut,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+
+// =============================================================
+// VOW DATING APP — BACKEND-READY MVP
+// Frontend now uses a service layer that can be swapped from mock
+// storage to Supabase/Firebase/Node API without rebuilding the UI.
+// =============================================================
+
+// --- SUPABASE DATABASE SCHEMA ---
+// Run this SQL inside Supabase > SQL Editor when ready:
+/*
+create table users (
+  id uuid primary key references auth.users(id) on delete cascade,
+  name text not null,
+  age int,
+  city text,
+  bio text,
+  intent text default 'Serious',
+  values text[] default '{}',
+  photos text[] default '{}',
+  verified boolean default false,
+  premium boolean default false,
+  created_at timestamptz default now()
+);
+
+create table likes (
+  id uuid primary key default gen_random_uuid(),
+  from_user_id uuid references users(id) on delete cascade,
+  to_user_id uuid references users(id) on delete cascade,
+  created_at timestamptz default now(),
+  unique(from_user_id, to_user_id)
+);
+
+create table matches (
+  id uuid primary key default gen_random_uuid(),
+  user_a_id uuid references users(id) on delete cascade,
+  user_b_id uuid references users(id) on delete cascade,
+  compatibility_score int default 0,
+  created_at timestamptz default now()
+);
+
+create table messages (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid references matches(id) on delete cascade,
+  sender_id uuid references users(id) on delete cascade,
+  body text not null,
+  read boolean default false,
+  created_at timestamptz default now()
+);
+
+create table reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_id uuid references users(id) on delete cascade,
+  reported_user_id uuid references users(id) on delete cascade,
+  reason text,
+  status text default 'Received',
+  created_at timestamptz default now()
+);
+
+create table subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  plan text not null,
+  status text default 'Active',
+  renewal_date timestamptz,
+  created_at timestamptz default now()
+);
+
+create table date_plans (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid references matches(id) on delete cascade,
+  title text not null,
+  place text,
+  budget text,
+  status text default 'Draft',
+  scheduled_for timestamptz,
+  created_at timestamptz default now()
+);
+
+alter table users enable row level security;
+alter table likes enable row level security;
+alter table matches enable row level security;
+alter table messages enable row level security;
+alter table reports enable row level security;
+alter table subscriptions enable row level security;
+alter table date_plans enable row level security;
+
+-- BASIC RLS POLICIES
+-- Users can view dating profiles, but only update their own profile.
+create policy "Public profiles are viewable" on users
+  for select using (true);
+
+create policy "Users can insert own profile" on users
+  for insert with check (auth.uid() = id);
+
+create policy "Users can update own profile" on users
+  for update using (auth.uid() = id);
+
+-- Likes: users can create and view likes they sent or received.
+create policy "Users can create own likes" on likes
+  for insert with check (auth.uid() = from_user_id);
+
+create policy "Users can view related likes" on likes
+  for select using (auth.uid() = from_user_id or auth.uid() = to_user_id);
+
+-- Matches: users can view matches they belong to.
+create policy "Users can view own matches" on matches
+  for select using (auth.uid() = user_a_id or auth.uid() = user_b_id);
+
+create policy "Users can create own matches" on matches
+  for insert with check (auth.uid() = user_a_id or auth.uid() = user_b_id);
+
+-- Messages: users can send/read messages only for their matches.
+create policy "Users can read match messages" on messages
+  for select using (
+    exists (
+      select 1 from matches
+      where matches.id = messages.match_id
+      and (matches.user_a_id = auth.uid() or matches.user_b_id = auth.uid())
+    )
+  );
+
+create policy "Users can send match messages" on messages
+  for insert with check (
+    auth.uid() = sender_id and exists (
+      select 1 from matches
+      where matches.id = messages.match_id
+      and (matches.user_a_id = auth.uid() or matches.user_b_id = auth.uid())
+    )
+  );
+
+-- Reports: users can create reports and view only their own reports.
+create policy "Users can create reports" on reports
+  for insert with check (auth.uid() = reporter_id);
+
+create policy "Users can view own reports" on reports
+  for select using (auth.uid() = reporter_id);
+
+-- Subscriptions: users can view their own subscription rows.
+create policy "Users can view own subscriptions" on subscriptions
+  for select using (auth.uid() = user_id);
+
+create policy "Users can create own subscription demo" on subscriptions
+  for insert with check (auth.uid() = user_id);
+
+-- Date plans: users can create/read plans only for their own matches.
+create policy "Users can view own date plans" on date_plans
+  for select using (
+    exists (
+      select 1 from matches
+      where matches.id = date_plans.match_id
+      and (matches.user_a_id = auth.uid() or matches.user_b_id = auth.uid())
+    )
+  );
+
+create policy "Users can create own date plans" on date_plans
+  for insert with check (
+    exists (
+      select 1 from matches
+      where matches.id = date_plans.match_id
+      and (matches.user_a_id = auth.uid() or matches.user_b_id = auth.uid())
+    )
+  );
+
+-- STORAGE SETUP FOR PROFILE PHOTOS
+-- In Supabase Storage, create a public bucket named: profile-photos
+-- Store uploaded photo URLs inside users.photos as a text[] array.
+*/
+
+const demoUser = {
+  id: "u_current",
+  email: "les@example.com",
+  name: "Les",
+  age: 39,
+  city: "Montgomery, AL",
+  values: ["Faith", "Family", "Business"],
+  intent: "Serious",
+  premium: true,
+  verified: true,
+};
+
+let currentUser = demoUser;
+
+const initialPeople = [
+  {
+    id: "u_ari",
+    name: "Ari",
+    age: 34,
+    city: "Montgomery, AL",
+    distance: "4 mi",
+    vibe: "Faith, finance, family, brunch",
+    badge: "Verified",
+    verified: true,
+    premium: false,
+    photo: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=900&auto=format&fit=crop",
+    prompt: "A perfect Sunday includes good coffee, clean sheets, and a plan for the future.",
+    match: 94,
+  },
+  {
+    id: "u_jalen",
+    name: "Jalen",
+    age: 38,
+    city: "Birmingham, AL",
+    distance: "88 mi",
+    vibe: "Real estate, jazz, travel, discipline",
+    badge: "Premium",
+    verified: true,
+    premium: true,
+    photo: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=900&auto=format&fit=crop",
+    prompt: "I value old-school respect, clear communication, and building something real.",
+    match: 91,
+  },
+  {
+    id: "u_maya",
+    name: "Maya",
+    age: 31,
+    city: "Atlanta, GA",
+    distance: "143 mi",
+    vibe: "Art, wellness, books, ambition",
+    badge: "Verified",
+    verified: true,
+    premium: false,
+    photo: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=900&auto=format&fit=crop",
+    prompt: "Dating should feel peaceful, intentional, and a little bit magical.",
+    match: 88,
+  },
+];
+
+const initialChats = [
+  { id: "m1", matchId: "match_ari", name: "Ari", message: "That answer about legacy was beautiful.", time: "2m", unread: true, intent: "Serious" },
+  { id: "m2", matchId: "match_jalen", name: "Jalen", message: "Dinner Thursday still works?", time: "1h", unread: false, intent: "Date planned" },
+  { id: "m3", matchId: "match_maya", name: "Maya", message: "I loved your travel list.", time: "Yesterday", unread: false, intent: "Slow burn" },
+];
+
+const dateIdeas = [
+  { id: "d1", title: "Coffee + Legacy Talk", place: "Downtown café", cost: "$", icon: Coffee },
+  { id: "d2", title: "Dinner With Intent", place: "Quiet upscale lounge", cost: "$$", icon: CalendarDays },
+  { id: "d3", title: "Video Chemistry Check", place: "In-app call", cost: "Free", icon: Video },
+];
+
+const premiumFeatures = [
+  "See who liked you",
+  "Advanced value filters",
+  "Verified-only matching",
+  "Weekly date concierge",
+];
+
+function calculateCompatibility(user, candidate) {
+  let score = 70;
+  const candidateText = `${candidate.vibe} ${candidate.prompt}`.toLowerCase();
+  user.values.forEach((value) => {
+    if (candidateText.includes(value.toLowerCase())) score += 5;
+  });
+  if (user.intent === "Serious" && candidate.match >= 90) score += 10;
+  if (candidate.verified) score += 4;
+  if (candidate.premium) score += 3;
+  return Math.min(score, 99);
+}
+
+// --- LIVE SUPABASE CONNECTION ---
+// Create a .env.local file in your project root:
+// VITE_SUPABASE_URL=https://your-project.supabase.co
+// VITE_SUPABASE_ANON_KEY=your-public-anon-key
+
+const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY;
+const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+const supabase = USE_SUPABASE
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+// --- LIVE SUPABASE SERVICE EXAMPLE ---
+// Swap backend = mockBackend to backend = supabaseBackend after configuration.
+const supabaseBackend = {
+  async signUp({ email, password, name }) {
+    if (!supabase) return { ...demoUser, email, name };
+
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) throw error;
+
+    const userId = data.user?.id;
+    if (userId) {
+      const { error: profileError } = await supabase.from("users").upsert({
+        id: userId,
+        name,
+        intent: "Serious",
+        values: ["Faith", "Family", "Business"],
+        verified: false,
+        premium: false,
+      });
+      if (profileError) throw profileError;
+    }
+
+    currentUser = {
+      ...demoUser,
+      id: userId || demoUser.id,
+      email,
+      name,
+      verified: false,
+      premium: false,
+    };
+
+    return currentUser;
+  },
+  async signIn({ email, password }) {
+    if (!supabase) return { ...demoUser, email };
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+
+    const userId = data.user?.id;
+    const { data: profile, error: profileError } = await supabase
+      .from("users")
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    if (profileError && profileError.code !== "PGRST116") throw profileError;
+
+    currentUser = {
+      ...demoUser,
+      ...profile,
+      id: userId || demoUser.id,
+      email,
+      name: profile?.name || email.split("@")[0],
+      values: profile?.values?.length ? profile.values : demoUser.values,
+    };
+
+    return currentUser;
+  },
+  async signOut() {
+    if (!supabase) return true;
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+    currentUser = demoUser;
+    return true;
+  },
+  async getCurrentSession() {
+    if (!supabase) return null;
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    return data.session;
+  },
+  async hydrateSessionUser() {
+    if (!supabase) return null;
+
+    const session = await this.getCurrentSession();
+    const authUser = session?.user;
+    if (!authUser) return null;
+
+    const { data: profile, error } = await supabase
+      .from("users")
+      .select("*")
+      .eq("id", authUser.id)
+      .single();
+
+    if (error && error.code !== "PGRST116") throw error;
+
+    currentUser = {
+      ...demoUser,
+      ...profile,
+      id: authUser.id,
+      email: authUser.email,
+      name: profile?.name || authUser.email?.split("@")[0] || "Member",
+      values: profile?.values?.length ? profile.values : demoUser.values,
+    };
+
+    return currentUser;
+  },
+  async getProfiles() {
+    if (!supabase) return initialPeople;
+
+    const { data, error } = await supabase
+      .from("users")
+      .select("id,name,age,city,bio,intent,values,photos,verified,premium")
+      .neq("id", currentUser.id)
+      .limit(25);
+
+    if (error) throw error;
+
+    if (!data?.length) return initialPeople;
+
+    return data.map((profile, index) => ({
+      id: profile.id,
+      name: profile.name || "Member",
+      age: profile.age || 30,
+      city: profile.city || "Nearby",
+      distance: "Nearby",
+      vibe: profile.values?.join(", ") || profile.intent || "Intentional dating",
+      badge: profile.premium ? "Premium" : profile.verified ? "Verified" : "Member",
+      verified: profile.verified,
+      premium: profile.premium,
+      photo: profile.photos?.[0] || initialPeople[index % initialPeople.length].photo,
+      prompt: profile.bio || "Looking for honest connection, clear communication, and alignment.",
+      match: 90,
+    }));
+  },
+  async getChats() {
+    if (!supabase) return initialChats;
+
+    const { data, error } = await supabase
+      .from("messages")
+      .select("id, match_id, body, read, created_at")
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if (error) throw error;
+    if (!data?.length) return initialChats;
+
+    return data.map((msg, index) => ({
+      id: msg.id,
+      matchId: msg.match_id,
+      name: `Match ${index + 1}`,
+      message: msg.body,
+      time: "Now",
+      unread: !msg.read,
+      intent: "Active",
+    }));
+  },
+  async likeProfile({ fromUserId, toUser }) {
+    if (!supabase) return mockBackend.likeProfile({ fromUserId, toUser });
+
+    const compatibility = calculateCompatibility(currentUser, toUser);
+    const isMatch = compatibility >= 90;
+
+    const { error: likeError } = await supabase
+      .from("likes")
+      .upsert({ from_user_id: fromUserId, to_user_id: toUser.id }, { onConflict: "from_user_id,to_user_id" });
+
+    if (likeError) throw likeError;
+
+    if (!isMatch) return { like: true, match: null };
+
+    const { data, error } = await supabase
+      .from("matches")
+      .insert({ user_a_id: fromUserId, user_b_id: toUser.id, compatibility_score: compatibility })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return { like: true, match: data };
+  },
+  async sendMessage({ matchId, body }) {
+    if (!supabase || matchId === "demo_match") return mockBackend.sendMessage({ matchId, body });
+
+    const { data, error } = await supabase
+      .from("messages")
+      .insert({ match_id: matchId, sender_id: currentUser.id, body })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return {
+      id: data.id,
+      matchId: data.match_id,
+      senderId: data.sender_id,
+      body: data.body,
+      read: data.read,
+      createdAt: data.created_at,
+    };
+  },
+  async createDatePlan({ matchId, idea }) {
+    if (!supabase || matchId === "demo_match") return mockBackend.createDatePlan({ matchId, idea });
+
+    const { data, error } = await supabase
+      .from("date_plans")
+      .insert({ match_id: matchId, title: idea.title, place: idea.place, budget: idea.cost })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+  async reportUser({ reportedUserId, reason }) {
+    if (!supabase) return mockBackend.reportUser({ reportedUserId, reason });
+
+    const { data, error } = await supabase
+      .from("reports")
+      .insert({ reporter_id: currentUser.id, reported_user_id: reportedUserId, reason })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+  async startSubscription(plan) {
+    if (!supabase) return mockBackend.startSubscription(plan);
+
+    const { data, error } = await supabase
+      .from("subscriptions")
+      .insert({ user_id: currentUser.id, plan, status: "Active" })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+};
+
+// --- MOCK BACKEND SERVICE ---
+// Active for preview. Replace with: const backend = supabaseBackend;
+const mockBackend = {
+  async signUp({ email, name }) {
+    currentUser = { ...demoUser, email, name };
+    return currentUser;
+  },
+  async signIn({ email }) {
+    currentUser = { ...demoUser, email };
+    return currentUser;
+  },
+  async signOut() {
+    currentUser = demoUser;
+    return true;
+  },
+  async getCurrentSession() {
+    return null;
+  },
+  async hydrateSessionUser() {
+    return null;
+  },
+  async getProfiles() {
+    return initialPeople;
+  },
+  async getChats() {
+    return initialChats;
+  },
+  async likeProfile({ fromUserId, toUser }) {
+    const compatibility = calculateCompatibility(currentUser, toUser);
+    const isMatch = compatibility >= 90;
+    return {
+      like: { id: crypto.randomUUID?.() || `like_${Date.now()}`, fromUserId, toUserId: toUser.id },
+      match: isMatch
+        ? { id: `match_${toUser.id}`, userAId: fromUserId, userBId: toUser.id, compatibilityScore: compatibility }
+        : null,
+    };
+  },
+  async sendMessage({ matchId, body }) {
+    return {
+      id: crypto.randomUUID?.() || `msg_${Date.now()}`,
+      matchId,
+      senderId: currentUser.id,
+      body,
+      read: false,
+      createdAt: new Date().toISOString(),
+    };
+  },
+  async createDatePlan({ matchId, idea }) {
+    return {
+      id: crypto.randomUUID?.() || `date_${Date.now()}`,
+      matchId,
+      title: idea.title,
+      place: idea.place,
+      budget: idea.cost,
+      status: "Draft",
+    };
+  },
+  async reportUser({ reportedUserId, reason }) {
+    return { id: `report_${Date.now()}`, reportedUserId, reason, status: "Received" };
+  },
+  async startSubscription(plan) {
+    return { plan, status: "Active", renewalDate: "Next month" };
+  },
+};
+
+const backend = USE_SUPABASE ? supabaseBackend : mockBackend;
+
+function PhoneFrame({ children }) {
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center p-4 sm:p-8">
+      <div className="w-full max-w-[430px] min-h-[860px] bg-[#120d10] rounded-[3rem] border border-white/10 shadow-2xl overflow-hidden relative">
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-7 rounded-b-3xl bg-black z-20" />
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Header({ status }) {
+  return (
+    <div className="pt-10 px-6 pb-4 flex items-center justify-between">
+      <div>
+        <p className="text-xs uppercase tracking-[0.35em] text-rose-200/70">Intentional Dating</p>
+        <h1 className="text-3xl font-semibold tracking-tight">Vow</h1>
+        <p className="text-[11px] text-white/40 mt-1 flex items-center gap-1"><Database size={12} /> {status}</p>
+      </div>
+      <div className="flex gap-2">
+        <button className="w-11 h-11 rounded-full bg-white/10 flex items-center justify-center border border-white/10"><Bell size={18} /></button>
+        <button className="w-11 h-11 rounded-full bg-white/10 flex items-center justify-center border border-white/10"><SlidersHorizontal size={18} /></button>
+      </div>
+    </div>
+  );
+}
+
+function SafetyStrip({ onReport }) {
+  return (
+    <div className="mx-6 mb-4 rounded-3xl bg-white/10 border border-white/10 p-4 grid grid-cols-3 gap-3 text-center">
+      <div><ShieldCheck className="mx-auto text-rose-200 mb-1" size={18} /><p className="text-[11px] text-white/55">Verified</p></div>
+      <div><LockKeyhole className="mx-auto text-rose-200 mb-1" size={18} /><p className="text-[11px] text-white/55">Private</p></div>
+      <button onClick={onReport}><Flag className="mx-auto text-rose-200 mb-1" size={18} /><p className="text-[11px] text-white/55">Report</p></button>
+    </div>
+  );
+}
+
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState("signup");
+  const [name, setName] = useState("Les");
+  const [email, setEmail] = useState("les@example.com");
+  const [password, setPassword] = useState("password123");
+  const [authMessage, setAuthMessage] = useState("Preview mode uses mock auth. Supabase Auth is ready in code.");
+
+  async function submitAuth() {
+    try {
+      const user = mode === "signup"
+        ? await backend.signUp({ email, password, name })
+        : await backend.signIn({ email, password });
+      setAuthMessage(`${mode === "signup" ? "Account created" : "Signed in"}: ${user.email}`);
+      onAuth(user);
+    } catch (error) {
+      setAuthMessage(error.message || "Auth failed");
+    }
+  }
+
+  return (
+    <PhoneFrame>
+      <div className="relative min-h-[860px] overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,#b76e79_0%,transparent_32%),linear-gradient(160deg,#1a1015,#080607)]" />
+        <div className="absolute -top-20 -right-24 w-72 h-72 bg-rose-300/20 rounded-full blur-3xl" />
+        <div className="relative z-10 min-h-[860px] flex flex-col justify-between p-7 pt-16">
+          <div className="flex justify-between items-center">
+            <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/15 flex items-center justify-center"><Heart className="text-rose-200" /></div>
+            <span className="text-sm text-white/60">Vow MVP</span>
+          </div>
+          <div className="space-y-5">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/10 border border-white/15 px-4 py-2 text-sm text-rose-100"><ShieldCheck size={16} /> Verified people. Real intention.</div>
+            <h2 className="text-6xl font-semibold leading-[0.95] tracking-tight">Date with purpose.</h2>
+            <p className="text-white/70 text-lg leading-relaxed">Create a secure profile, match by values, and build connection with clarity.</p>
+            <div className="rounded-[2rem] bg-white/10 border border-white/10 p-4 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setMode("signup")} className={`h-11 rounded-2xl text-sm font-semibold ${mode === "signup" ? "bg-rose-200 text-neutral-950" : "bg-white/10 text-white/60"}`}>Sign Up</button>
+                <button onClick={() => setMode("signin")} className={`h-11 rounded-2xl text-sm font-semibold ${mode === "signin" ? "bg-rose-200 text-neutral-950" : "bg-white/10 text-white/60"}`}>Log In</button>
+              </div>
+              {mode === "signup" && <div className="h-12 rounded-2xl bg-black/20 border border-white/10 px-4 flex items-center gap-2"><User size={16} className="text-rose-200" /><input value={name} onChange={(e) => setName(e.target.value)} className="flex-1 bg-transparent outline-none text-sm" placeholder="Name" /></div>}
+              <div className="h-12 rounded-2xl bg-black/20 border border-white/10 px-4 flex items-center gap-2"><Mail size={16} className="text-rose-200" /><input value={email} onChange={(e) => setEmail(e.target.value)} className="flex-1 bg-transparent outline-none text-sm" placeholder="Email" /></div>
+              <div className="h-12 rounded-2xl bg-black/20 border border-white/10 px-4 flex items-center gap-2"><KeyRound size={16} className="text-rose-200" /><input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="flex-1 bg-transparent outline-none text-sm" placeholder="Password" /></div>
+              <Button onClick={submitAuth} className="w-full h-14 rounded-2xl bg-rose-200 text-neutral-950 hover:bg-rose-100 text-base font-semibold">{mode === "signup" ? "Create My Profile" : "Log In"}</Button>
+            </div>
+            <p className="text-center text-xs text-white/45">{authMessage}</p>
+          </div>
+        </div>
+      </div>
+    </PhoneFrame>
+  );
+}
+
+function MatchCard({ person, onLike, onNext }) {
+  const compatibility = calculateCompatibility(currentUser, person);
+  return (
+    <motion.div key={person.id} initial={{ scale: 0.96, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.94, opacity: 0, x: -80 }} transition={{ duration: 0.35 }} className="px-5">
+      <Card className="overflow-hidden rounded-[2rem] bg-white/10 border-white/10 shadow-2xl">
+        <CardContent className="p-0">
+          <div className="relative h-[500px]">
+            <img src={person.photo} alt={person.name} className="absolute inset-0 w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/10 to-transparent" />
+            <div className="absolute top-5 left-5 flex gap-2">
+              <span className="bg-black/45 backdrop-blur-xl border border-white/15 rounded-full px-3 py-1 text-xs flex items-center gap-1"><ShieldCheck size={13} /> {person.badge}</span>
+              <span className="bg-rose-200 text-neutral-950 rounded-full px-3 py-1 text-xs font-bold">{compatibility}% Match</span>
+            </div>
+            <div className="absolute bottom-0 p-6 space-y-3">
+              <div>
+                <h2 className="text-4xl font-semibold">{person.name}, {person.age}</h2>
+                <p className="text-white/75 flex items-center gap-1 mt-1"><MapPin size={15} /> {person.city} • {person.distance}</p>
+              </div>
+              <p className="text-sm text-rose-100/90">{person.vibe}</p>
+              <p className="text-white/85 leading-relaxed">“{person.prompt}”</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      <div className="flex items-center justify-center gap-5 mt-6">
+        <button onClick={onNext} className="w-16 h-16 rounded-full bg-white/10 border border-white/15 flex items-center justify-center"><X /></button>
+        <button onClick={() => onLike(person)} className="w-20 h-20 rounded-full bg-rose-200 text-neutral-950 shadow-xl shadow-rose-500/20 flex items-center justify-center"><Heart fill="currentColor" /></button>
+        <button className="w-16 h-16 rounded-full bg-white/10 border border-white/15 flex items-center justify-center"><Star /></button>
+      </div>
+    </motion.div>
+  );
+}
+
+function Discover({ profiles, backendStatus, onLike, onReport }) {
+  const [index, setIndex] = useState(0);
+  const current = profiles[index % profiles.length];
+  const next = () => setIndex((prev) => prev + 1);
+  return (
+    <div className="pb-24">
+      <Header status={backendStatus} />
+      <div className="px-6 mb-4 flex items-center gap-3">
+        <div className="flex-1 h-12 rounded-2xl bg-white/10 border border-white/10 px-4 flex items-center gap-2 text-white/50"><Search size={17} /> Values, city, lifestyle</div>
+        <button className="h-12 px-4 rounded-2xl bg-rose-200 text-neutral-950 font-semibold">Filter</button>
+      </div>
+      <SafetyStrip onReport={() => onReport(current)} />
+      <AnimatePresence mode="wait">
+        <MatchCard person={current} onNext={next} onLike={async (person) => { await onLike(person); next(); }} />
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function Dates({ onCreateDatePlan }) {
+  const [createdPlan, setCreatedPlan] = useState(null);
+  return (
+    <div className="px-6 pb-24 pt-10">
+      <div className="rounded-[2rem] bg-gradient-to-br from-rose-200 to-stone-100 text-neutral-950 p-6 mb-5">
+        <p className="text-xs uppercase tracking-[0.3em] text-neutral-600 mb-3">Date Concierge</p>
+        <h2 className="text-4xl font-semibold leading-tight">Plan the date. Protect the peace.</h2>
+        <p className="text-neutral-700 mt-3">Built-in ideas, budget fit, video chemistry checks, and safe-date reminders.</p>
+      </div>
+      <div className="space-y-3">
+        {dateIdeas.map((idea) => {
+          const Icon = idea.icon;
+          return (
+            <button key={idea.id} onClick={async () => setCreatedPlan(await onCreateDatePlan(idea))} className="w-full text-left rounded-3xl bg-white/10 border border-white/10 p-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-rose-200 text-neutral-950 flex items-center justify-center"><Icon size={20} /></div>
+              <div className="flex-1"><h3 className="font-semibold">{idea.title}</h3><p className="text-sm text-white/55">{idea.place}</p></div>
+              <span className="text-sm text-rose-100">{idea.cost}</span>
+            </button>
+          );
+        })}
+      </div>
+      {createdPlan && <p className="mt-4 text-sm text-rose-100">Saved to backend: {createdPlan.title}</p>}
+    </div>
+  );
+}
+
+function Premium({ onSubscribe }) {
+  const [subscription, setSubscription] = useState(null);
+  return (
+    <div className="px-6 pb-24 pt-10">
+      <div className="rounded-[2rem] bg-[#1f171b] border border-rose-200/20 p-6 mb-5 overflow-hidden relative">
+        <div className="absolute -right-16 -top-16 w-44 h-44 rounded-full bg-rose-200/20 blur-3xl" />
+        <Gem className="text-rose-200 mb-4" size={32} />
+        <h2 className="text-4xl font-semibold leading-tight">Vow Premium</h2>
+        <p className="text-white/60 mt-3">For serious daters who want clarity, control, and higher-quality matches.</p>
+        <div className="flex items-end gap-2 mt-5"><span className="text-5xl font-semibold">$19</span><span className="text-white/45 mb-2">/ month</span></div>
+      </div>
+      <div className="space-y-3">
+        {premiumFeatures.map((feature) => (
+          <div key={feature} className="rounded-2xl bg-white/10 border border-white/10 p-4 flex items-center gap-3"><ShieldCheck className="text-rose-200" size={18} /><span className="text-white/80">{feature}</span></div>
+        ))}
+      </div>
+      <Button onClick={async () => setSubscription(await onSubscribe("premium_monthly"))} className="w-full h-14 rounded-2xl bg-rose-200 text-neutral-950 hover:bg-rose-100 mt-6 font-semibold"><WalletCards size={18} className="mr-2" /> Start Premium</Button>
+      {subscription && <p className="mt-4 text-sm text-rose-100">Subscription: {subscription.status}</p>}
+    </div>
+  );
+}
+
+function Messages({ chats, matches, onSendMessage }) {
+  const [draft, setDraft] = useState("");
+  const [sent, setSent] = useState(null);
+  return (
+    <div className="px-6 pb-24 pt-10">
+      <h2 className="text-3xl font-semibold mb-2">Messages</h2>
+      <p className="text-white/55 mb-2">Keep the conversation honest, respectful, and clear.</p>
+      <p className="text-xs text-rose-200 mb-4">Matches: {matches.length}</p>
+      <div className="space-y-3">
+        {chats.map((chat) => (
+          <div key={chat.id} className="rounded-3xl bg-white/10 border border-white/10 p-4 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-rose-200 text-neutral-950 flex items-center justify-center font-bold">{chat.name[0]}</div>
+            <div className="flex-1 min-w-0">
+              <div className="flex justify-between"><h3 className="font-semibold">{chat.name}</h3><span className="text-xs text-white/40">{chat.time}</span></div>
+              <p className="text-sm text-white/60 truncate">{chat.message}</p>
+            </div>
+            <span className="text-[10px] rounded-full bg-white/10 border border-white/10 px-2 py-1 text-rose-100">{chat.intent}</span>
+            {chat.unread && <div className="w-2.5 h-2.5 rounded-full bg-rose-200" />}
+          </div>
+        ))}
+      </div>
+      <div className="mt-5 rounded-3xl bg-white/10 border border-white/10 p-3 flex gap-2">
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Send a respectful first message..." className="flex-1 bg-transparent outline-none text-sm placeholder:text-white/35" />
+        <button onClick={async () => { if (!draft.trim()) return; setSent(await onSendMessage(draft)); setDraft(""); }} className="w-10 h-10 rounded-2xl bg-rose-200 text-neutral-950 flex items-center justify-center"><Send size={16} /></button>
+      </div>
+      {sent && <p className="mt-3 text-xs text-rose-100">Message saved: {sent.body}</p>}
+    </div>
+  );
+}
+
+function Profile({ user, onLogout }) {
+  const [profileCompletion, setProfileCompletion] = useState(82);
+  const interests = ["Marriage-minded", "Business", "Faith", "Travel", "Family", "Wellness"];
+  return (
+    <div className="px-6 pb-24 pt-10">
+      <div className="rounded-[2rem] bg-gradient-to-br from-rose-200 to-stone-100 text-neutral-950 p-6 mb-5">
+        <div className="flex items-center gap-4">
+          <div className="w-20 h-20 rounded-3xl bg-neutral-950 text-white flex items-center justify-center text-3xl font-semibold">L</div>
+          <div><h2 className="text-3xl font-semibold">{user?.name || "Your Profile"}</h2><p className="text-neutral-700">{profileCompletion}% complete</p></div>
+        </div>
+        <div className="h-3 rounded-full bg-black/10 mt-6 overflow-hidden"><div style={{ width: `${profileCompletion}%` }} className="h-full bg-neutral-950 rounded-full" /></div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 mb-5">
+        <div className="rounded-3xl bg-white/10 border border-white/10 p-4"><Sparkles className="text-rose-200 mb-3" /><p className="text-sm text-white/55">Compatibility</p><h3 className="text-2xl font-semibold">High Intent</h3></div>
+        <div className="rounded-3xl bg-white/10 border border-white/10 p-4"><Crown className="text-rose-200 mb-3" /><p className="text-sm text-white/55">Plan</p><h3 className="text-2xl font-semibold">Premium</h3></div>
+      </div>
+      <h3 className="font-semibold mb-3">Dating Values</h3>
+      <div className="flex flex-wrap gap-2">{interests.map((item) => <span key={item} className="rounded-full bg-white/10 border border-white/10 px-4 py-2 text-sm text-white/75">{item}</span>)}</div>
+      <Button onClick={() => setProfileCompletion((prev) => Math.min(prev + 5, 100))} className="w-full h-14 rounded-2xl bg-white text-neutral-950 hover:bg-white/90 mt-8">Improve Profile</Button>
+      <Button onClick={onLogout} className="w-full h-14 rounded-2xl bg-white/10 text-white hover:bg-white/15 mt-3 border border-white/10"><LogOut size={17} className="mr-2" /> Log Out</Button>
+    </div>
+  );
+}
+
+export default function DatingAppPrototype() {
+  const [started, setStarted] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [tab, setTab] = useState("discover");
+  const [profiles, setProfiles] = useState(initialPeople);
+  const [chats, setChats] = useState(initialChats);
+  const [matches, setMatches] = useState([]);
+  const [backendStatus, setBackendStatus] = useState(USE_SUPABASE ? "Supabase connected" : "Mock backend connected — add Supabase env keys");
+
+  useEffect(() => {
+    async function bootBackend() {
+      try {
+        const sessionUser = await backend.hydrateSessionUser();
+        if (sessionUser) {
+          setAuthUser(sessionUser);
+          setStarted(true);
+        }
+        const loadedProfiles = await backend.getProfiles();
+        const loadedChats = await backend.getChats();
+        setProfiles(loadedProfiles);
+        setChats(loadedChats);
+        setBackendStatus(sessionUser ? `Session restored for ${sessionUser.email}` : USE_SUPABASE ? "Supabase live database connected" : "Mock backend connected — add Supabase env keys");
+      } catch (error) {
+        setBackendStatus(error.message || "Backend connection failed");
+      }
+    }
+    bootBackend();
+  }, []);
+
+  async function handleLike(person) {
+    const result = await backend.likeProfile({ fromUserId: currentUser.id, toUser: person });
+    setBackendStatus(result.match ? `Match created with ${person.name}` : `Like saved for ${person.name}`);
+    if (result.match) setMatches((prev) => [...prev, result.match]);
+  }
+
+  async function handleReport(person) {
+    const result = await backend.reportUser({ reportedUserId: person.id, reason: "User review requested" });
+    setBackendStatus(`Safety report ${result.status}`);
+  }
+
+  const screen = useMemo(() => {
+    if (tab === "messages") return <Messages chats={chats} matches={matches} onSendMessage={(body) => backend.sendMessage({ matchId: matches[0]?.id || "demo_match", body })} />;
+    if (tab === "dates") return <Dates onCreateDatePlan={(idea) => backend.createDatePlan({ matchId: matches[0]?.id || "demo_match", idea })} />;
+    if (tab === "premium") return <Premium onSubscribe={(plan) => backend.startSubscription(plan)} />;
+    if (tab === "profile") return <Profile user={authUser} onLogout={async () => { await backend.signOut(); setAuthUser(null); setStarted(false); setBackendStatus(USE_SUPABASE ? "Signed out — Supabase ready" : "Signed out — mock backend ready"); }} />;
+    return <Discover profiles={profiles} backendStatus={backendStatus} onLike={handleLike} onReport={handleReport} />;
+  }, [tab, profiles, backendStatus, matches, chats]);
+
+  if (!started) return <AuthScreen onAuth={(user) => { setAuthUser(user); setStarted(true); setBackendStatus(`Signed in as ${user.email}`); }} />;
+
+  return (
+    <PhoneFrame>
+      <div className="min-h-[860px] bg-[#120d10] relative">
+        {screen}
+        <div className="absolute bottom-5 left-5 right-5 rounded-[2rem] bg-black/65 backdrop-blur-2xl border border-white/10 p-2 grid grid-cols-5 gap-1">
+          <button onClick={() => setTab("discover")} className={`h-14 rounded-2xl flex flex-col items-center justify-center gap-1 ${tab === "discover" ? "bg-rose-200 text-neutral-950" : "text-white/60"}`}><Heart size={17} /><span className="text-[10px] font-medium">Match</span></button>
+          <button onClick={() => setTab("messages")} className={`h-14 rounded-2xl flex flex-col items-center justify-center gap-1 ${tab === "messages" ? "bg-rose-200 text-neutral-950" : "text-white/60"}`}><MessageCircle size={17} /><span className="text-[10px] font-medium">Chat</span></button>
+          <button onClick={() => setTab("dates")} className={`h-14 rounded-2xl flex flex-col items-center justify-center gap-1 ${tab === "dates" ? "bg-rose-200 text-neutral-950" : "text-white/60"}`}><CalendarDays size={17} /><span className="text-[10px] font-medium">Dates</span></button>
+          <button onClick={() => setTab("premium")} className={`h-14 rounded-2xl flex flex-col items-center justify-center gap-1 ${tab === "premium" ? "bg-rose-200 text-neutral-950" : "text-white/60"}`}><Crown size={17} /><span className="text-[10px] font-medium">Plus</span></button>
+          <button onClick={() => setTab("profile")} className={`h-14 rounded-2xl flex flex-col items-center justify-center gap-1 ${tab === "profile" ? "bg-rose-200 text-neutral-950" : "text-white/60"}`}><User size={17} /><span className="text-[10px] font-medium">Me</span></button>
+        </div>
+      </div>
+    </PhoneFrame>
+  );
+}
